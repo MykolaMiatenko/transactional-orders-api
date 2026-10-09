@@ -2,6 +2,7 @@ import type { RequestHandler } from "express";
 import { jwtVerify } from "jose";
 import type { Config } from "./config.js";
 import { ApiError } from "./errors.js";
+import { userClaimsSchema } from "./user.js";
 
 export function createAuthenticate(config: Pick<Config, "JWT_SECRET" | "JWT_ISSUER" | "JWT_AUDIENCE">): RequestHandler {
   const key = new TextEncoder().encode(config.JWT_SECRET);
@@ -17,10 +18,13 @@ export function createAuthenticate(config: Pick<Config, "JWT_SECRET" | "JWT_ISSU
         audience: config.JWT_AUDIENCE,
         requiredClaims: ["sub", "exp", "iat"],
       });
-      if (!payload.sub?.trim() || payload.sub.length > 200) {
-        throw new Error("Invalid token subject");
-      }
-      res.locals.userId = payload.sub;
+      // Extract an allowlist of claims only after signature and registered-claim verification.
+      const claims = userClaimsSchema.parse(payload);
+      res.locals.user = Object.freeze({
+        userId: claims.sub,
+        roles: Object.freeze([...new Set(claims.roles)]),
+        scopes: Object.freeze([...new Set(claims.scope.split(/\s+/).filter(Boolean))]),
+      });
     } catch {
       throw new ApiError(401, "UNAUTHORIZED", "A valid bearer token is required.");
     }

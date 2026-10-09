@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, test } from "node:test";
-import { SignJWT } from "jose";
+import { SignJWT, type JWTPayload } from "jose";
 import { Pool } from "pg";
 import { pino } from "pino";
 import { createApp } from "../src/app.js";
@@ -27,9 +27,9 @@ let baseUrl: string;
 let token: string;
 const productId = "7106f556-b21c-4a1f-b155-44327735deae";
 
-async function signToken(userId = "user-a", overrides: { audience?: string; expiration?: number } = {}) {
-  return new SignJWT({}).setProtectedHeader({ alg: "HS256" })
-    .setSubject(userId).setIssuer(config.JWT_ISSUER)
+async function signToken(userId = "user-a", overrides: { audience?: string; expiration?: number; issuer?: string; claims?: JWTPayload } = {}) {
+  return new SignJWT(overrides.claims ?? {}).setProtectedHeader({ alg: "HS256" })
+    .setSubject(userId).setIssuer(overrides.issuer ?? config.JWT_ISSUER)
     .setAudience(overrides.audience ?? config.JWT_AUDIENCE)
     .setIssuedAt().setExpirationTime(overrides.expiration ?? Math.floor(Date.now() / 1000) + 60)
     .sign(new TextEncoder().encode(config.JWT_SECRET));
@@ -221,4 +221,22 @@ test("health probes work and migrations are repeatable", async () => {
   assert.equal((await fetch(`${baseUrl}/health/ready`)).status, 200);
   await migrate(pool);
   assert.equal((await pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0]?.count, 1);
+});
+
+test("me returns only verified identity, roles and scopes", async () => {
+  const jwt = await signToken("profile-user", { claims: { roles: ["buyer", "buyer"], scope: "orders:read orders:read", email: "private@example.com" } });
+  const response = await fetch(`${baseUrl}/api/me`, { headers: { Authorization: `Bearer ${jwt}` } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { userId: "profile-user", roles: ["buyer"], scopes: ["orders:read"] });
+  assert.equal((await fetch(`${baseUrl}/api/me`)).status, 401);
+});
+
+test("rejects invalid subjects, malformed claims and wrong issuer", async () => {
+  const tokens = [await signToken(""), await signToken(" "), await signToken("user-a", { issuer: "untrusted" }),
+    await signToken("user-a", { claims: { roles: "admin" } }), await signToken("user-a", { claims: { scope: ["orders:read"] } })];
+  const noSubject = await new SignJWT({}).setProtectedHeader({ alg: "HS256" }).setIssuer(config.JWT_ISSUER)
+    .setAudience(config.JWT_AUDIENCE).setIssuedAt().setExpirationTime("1m").sign(new TextEncoder().encode(config.JWT_SECRET));
+  for (const jwt of [...tokens, noSubject]) {
+    assert.equal((await fetch(`${baseUrl}/api/me`, { headers: { Authorization: `Bearer ${jwt}` } })).status, 401);
+  }
 });
