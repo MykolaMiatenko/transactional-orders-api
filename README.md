@@ -1,12 +1,12 @@
 # Transactional Order API
 
-Проєкт демонструє реалізацію API створення замовлень із транзакційним збереженням даних, атомарним списанням залишків та захистом від повторних запитів. Він показує коректну поведінку під час конкурентних запитів і збоїв, JWT-автентифікацію, валідацію вхідних даних та інтеграційне тестування зі справжньою базою даних.
+This project demonstrates a Node.js order API with transactional persistence, atomic inventory reservations, and idempotent request handling. It includes verified JWT authentication, a typed user context, ownership checks, runtime validation, and integration tests against real PostgreSQL.
 
-Стек: Node.js, TypeScript, Express 5, PostgreSQL із драйвером `pg`, Zod для валідації, `jose` для перевірки JWT та Pino для структурованого логування.
+Stack: Node.js, TypeScript, Express 5, PostgreSQL with `pg`, Zod for validation, `jose` for JWT verification, and Pino for structured logging.
 
-## Запуск
+## Getting started
 
-Потрібні Node.js 22+ та Docker із Compose. Команди виконуються з каталогу проєкту.
+Requirements: Node.js 22+ and Docker with Compose. Run these commands from the project directory:
 
 ```bash
 npm ci
@@ -17,9 +17,9 @@ npm run db:seed
 npm run dev
 ```
 
-Сервер працює на `http://localhost:3000`. Seed створює товар `7106f556-b21c-4a1f-b155-44327735deae` із ціною 1999 центів і початковим залишком 100. Повторний seed не відновлює списаний залишок.
+The server listens on `http://localhost:3000`. The seed creates product `7106f556-b21c-4a1f-b155-44327735deae` with a price of 1999 cents and an initial stock of 100. Running the seed again does not replenish inventory consumed by existing orders.
 
-В іншому терміналі створіть локальний токен і замовлення:
+In another terminal, generate a local token and create an order:
 
 ```bash
 TOKEN=$(npm run --silent token:dev -- demo-user)
@@ -32,7 +32,7 @@ curl -i http://localhost:3000/api/orders \
   -d '{"productId":"7106f556-b21c-4a1f-b155-44327735deae","quantity":2}'
 ```
 
-Очікуваний результат — `201 Created`, заголовок `Location: /api/orders/<id>` та JSON:
+Expect `201 Created`, a `Location: /api/orders/<id>` header, and this JSON response:
 
 ```json
 {
@@ -43,21 +43,21 @@ curl -i http://localhost:3000/api/orders \
 }
 ```
 
-Повторіть той самий `curl` з тим самим `$KEY`: API поверне той самий JSON і статус 201, а залишок не зміниться вдруге. Для нового замовлення генеруйте новий ключ. Зміна payload із попереднім ключем поверне 409.
+Repeat the same `curl` with the same `$KEY`: the API returns the same JSON and status 201 without consuming stock again. Generate a new key for each new order. Reusing a key with a different payload returns 409.
 
-## HTTP-контракт
+## HTTP contract
 
-| Метод | Шлях | Призначення |
+| Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/me` | Перевірена ідентичність, ролі та scopes поточного користувача |
-| POST | `/api/orders` | Створити замовлення; потрібні Bearer JWT та UUID `Idempotency-Key` |
-| GET | `/api/orders/:id` | Прочитати власне замовлення; потрібен Bearer JWT |
-| GET | `/health/live` | Перевірити роботу HTTP-сервера |
-| GET | `/health/ready` | Перевірити доступність БД |
+| GET | `/api/me` | Read the current user's verified identity, roles, and scopes |
+| POST | `/api/orders` | Create an order; requires Bearer JWT and a UUID `Idempotency-Key` |
+| GET | `/api/orders/:id` | Read an owned order; requires Bearer JWT |
+| GET | `/health/live` | Check HTTP server liveness |
+| GET | `/health/ready` | Check database connectivity |
 
-Тіло створення допускає лише `productId` (UUID) та `quantity` (ціле число 1–100). Ціна й користувач беруться з БД та перевіреного JWT відповідно. UUID нормалізуються до нижнього регістру. Гроші зберігаються цілими числами в центах.
+The creation body accepts only `productId` (UUID) and `quantity` (an integer from 1 to 100). The price comes from the database; the user ID comes from the verified JWT. UUIDs are normalized to lowercase. Monetary values are stored as integer cents.
 
-Помилки мають формат:
+Errors use this format:
 
 ```json
 {
@@ -67,65 +67,81 @@ curl -i http://localhost:3000/api/orders \
 }
 ```
 
-`X-Request-Id` містить той самий ідентифікатор, що й логи запиту. Кожен HTTP-запит отримує новий request ID, включно з повторними запитами.
+`X-Request-Id` matches the ID in request logs. Each HTTP request receives a new request ID, including retries.
 
-| Статус | Код | Причина |
+| Status | Code | Reason |
 |---|---|---|
-| 400 | `INVALID_REQUEST` | Некоректне тіло, UUID або відсутній ключ |
-| 400 | `INVALID_JSON` | Невалідний JSON |
-| 401 | `UNAUTHORIZED` | Токен відсутній, невалідний або прострочений |
-| 404 | `PRODUCT_NOT_FOUND` | Товар не існує |
-| 404 | `ORDER_NOT_FOUND` | Замовлення не існує або належить іншому користувачу |
-| 404 | `NOT_FOUND` | Невідомий маршрут |
-| 409 | `INSUFFICIENT_STOCK` | Недостатній залишок |
-| 409 | `IDEMPOTENCY_KEY_REUSED` | Ключ уже використано для іншого payload |
-| 413 | `PAYLOAD_TOO_LARGE` | JSON перевищує 16 КБ |
-| 415 | `UNSUPPORTED_ENCODING` | Непідтримуване кодування тіла |
-| 503 | `DATABASE_BUSY` | Timeout блокування, SQL timeout або конфлікт транзакцій |
-| 503 | `DATABASE_UNAVAILABLE` | Відомий збій підключення до БД |
-| 503 | `NOT_READY` | БД недоступна для readiness probe |
-| 500 | `INTERNAL_ERROR` | Неочікувана помилка; внутрішні деталі не повертаються |
+| 400 | `INVALID_REQUEST` | Invalid body, UUID, query parameters, or missing key |
+| 400 | `INVALID_JSON` | Malformed JSON |
+| 401 | `UNAUTHORIZED` | Missing, invalid, or expired token |
+| 404 | `PRODUCT_NOT_FOUND` | Product does not exist |
+| 404 | `ORDER_NOT_FOUND` | Order does not exist or belongs to another user |
+| 404 | `NOT_FOUND` | Unknown route |
+| 409 | `INSUFFICIENT_STOCK` | Not enough inventory |
+| 409 | `IDEMPOTENCY_KEY_REUSED` | Key was already used with a different payload |
+| 413 | `PAYLOAD_TOO_LARGE` | JSON body exceeds 16 KB |
+| 415 | `UNSUPPORTED_ENCODING` | Unsupported body encoding |
+| 503 | `DATABASE_BUSY` | Lock timeout, SQL timeout, or transaction conflict |
+| 503 | `DATABASE_UNAVAILABLE` | Recognized database connection failure |
+| 503 | `NOT_READY` | Database is unavailable for the readiness probe |
+| 500 | `INTERNAL_ERROR` | Unexpected failure; internal details are not exposed |
 
-Для 503 API встановлює `Retry-After: 1`. Після timeout, мережевого збою або невизначеного результату повторюйте запит із **тим самим ключем і payload**: транзакція могла вже закомітитися.
+For 503 responses, the API sets `Retry-After: 1`. After a timeout, network failure, or uncertain creation outcome, retry with **the same key and payload**: the transaction may already have committed.
 
-## Транзакції та конкурентність
+## Transactions and concurrency
 
-`OrderService.create()` виконує всі SQL-запити через один клієнт `pg` в одній транзакції `READ COMMITTED`:
+`OrderService.create()` executes every SQL statement through one `pg` client in a `READ COMMITTED` transaction:
 
-1. Реєструє `(user_id, operation, request_key)` через унікальний ключ БД.
-2. Для повторного ключа перевіряє SHA-256 нормалізованого payload і повертає збережений результат.
-3. Виконує `UPDATE products ... WHERE stock >= quantity`, щоб атомарно перевірити й списати залишок.
-4. Записує замовлення та JSON-відповідь і робить `COMMIT`.
+1. Claim `(user_id, operation, request_key)` using a database uniqueness constraint.
+2. For an existing key, verify the SHA-256 hash of the normalized payload and return the stored response.
+3. Execute `UPDATE products ... WHERE stock >= quantity` to check and reserve inventory atomically.
+4. Store the order and JSON response, then commit.
 
-Паралельні повтори координуються PostgreSQL, тому поведінка зберігається для кількох процесів API. `READ COMMITTED` дозволяє наступному `SELECT` побачити результат конкурентної транзакції після очікування унікального ключа. Будь-яка помилка до commit відкочує замовлення, залишок і запис ключа разом. Невдалі бізнес-запити не кешуються. Клієнт звільняється рівно один раз у `finally`; після невдалого rollback з'єднання видаляється з пулу.
+PostgreSQL coordinates concurrent retries across API processes. `READ COMMITTED` allows the subsequent SELECT to observe the competing transaction's committed result after waiting on the unique key. Any failure before commit rolls back the order, inventory change, and idempotency record together. Failed business requests are not cached. The client is released exactly once in `finally`; a connection that cannot roll back is discarded from the pool.
 
-Ключі успішних запитів зберігаються без автоматичного TTL. Не видаляйте їх без визначеного бізнесом вікна повторів: після видалення попередній запит може створити ще одне замовлення.
+Successful idempotency keys have no automatic TTL. Define a business retry window before deleting them: a replay after deletion can create another order.
 
-SQL timeout — 5 секунд, timeout блокування — 2 секунди, timeout отримання з'єднання — 3 секунди. При SIGINT/SIGTERM сервер припиняє приймати нові запити, завершує активні й закриває пул; граничний час shutdown — 10 секунд.
+SQL timeout is 5 seconds, lock timeout is 2 seconds, and connection acquisition timeout is 3 seconds. On SIGINT/SIGTERM, the server stops accepting new requests, drains active handlers, and closes the pool. The shutdown deadline is 10 seconds.
 
-## Автентифікація й конфігурація
+## Authentication and configuration
 
-Після перевірки JWT middleware створює типізований контекст `UserContext` із `sub`, `roles` (масив рядків) і `scope` (рядок дозволів через пробіли). `GET /api/me` повертає лише `userId`, `roles`, `scopes`; довільні claims, персональні дані та сам токен у відповідь не потрапляють. Невалідний формат claims повертає 401. Ролі самі по собі не надають доступ до операцій.
+The `jose` library verifies the HS256 signature, issuer, audience, required `sub`/`iat`/`exp` claims, expiration, and `nbf` when present. The `sub` claim identifies the user. JWTs are verified before claims are used for identity or ownership checks; decoding a token alone does not authenticate a caller.
 
-JWT перевіряється бібліотекою `jose`: підпис **HS256**, issuer, audience, `sub`, `iat`, `exp`, термін дії та `nbf`, якщо він заданий. `sub` визначає користувача. Скрипт `token:dev` призначений для локальної розробки, видає токен на годину й вимкнений у production. HTTP endpoint видачі токенів не додається.
+Middleware builds an immutable, typed `UserContext` from `sub`, `roles` (an array of strings), and `scope` (a space-separated string). Duplicate roles and scopes are removed; missing optional claims default to empty arrays. Malformed claim types, missing subjects, and empty subjects return 401.
 
-Перед розгортанням встановіть власний криптографічно випадковий `JWT_SECRET` щонайменше 32 байти та узгодьте issuer/audience із сервісом видачі токенів. Сервер відхиляє демонстраційний секрет у production. Поточний контракт використовує спільний секрет HS256; для зовнішнього провайдера з RS256/JWKS адаптуйте `src/auth.ts` до його ключів і claims.
+`GET /api/me` returns only the allowlisted `userId`, `roles`, and `scopes` fields. It does not return the token or arbitrary claims. For the default development token:
 
-| Змінна | Призначення | Типове значення |
+```bash
+curl http://localhost:3000/api/me -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "userId": "demo-user",
+  "roles": [],
+  "scopes": []
+}
+```
+
+The current `main` implementation extracts roles and scopes but does not enforce scope-based authorization. Order access is restricted to the authenticated owner through the verified `sub` claim. There is no user-profile database or HTTP token-issuance endpoint.
+
+`npm run --silent token:dev -- demo-user` generates a local HS256 token valid for one hour. This development helper accepts a user ID and is disabled in production. Before deployment, set a cryptographically random `JWT_SECRET` of at least 32 bytes and align issuer/audience with your token issuer. The server rejects the demonstration secret in production.
+
+| Variable | Purpose | Default |
 |---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string | Обов'язкова |
-| `JWT_SECRET` | Секрет підпису JWT | Обов'язкова |
-| `JWT_ISSUER` | Очікуваний issuer | `order-api` |
-| `JWT_AUDIENCE` | Очікувана audience | `order-api-clients` |
-| `PORT` | HTTP-порт | `3000` |
-| `DB_POOL_MAX` | Максимум з'єднань API | `10` |
-| `NODE_ENV` | `development`, `test`, `production` | `development` |
-| `LOG_LEVEL` | Рівень логів Pino | `info` |
-| `TEST_DATABASE_URL` | Окрема БД для інтеграційних тестів | Обов'язкова для `npm test` |
+| `DATABASE_URL` | PostgreSQL connection string | Required |
+| `JWT_SECRET` | JWT signing secret | Required |
+| `JWT_ISSUER` | Expected issuer | `order-api` |
+| `JWT_AUDIENCE` | Expected audience | `order-api-clients` |
+| `PORT` | HTTP port | `3000` |
+| `DB_POOL_MAX` | Maximum API pool connections | `10` |
+| `NODE_ENV` | `development`, `test`, or `production` | `development` |
+| `LOG_LEVEL` | Pino log level | `info` |
+| `TEST_DATABASE_URL` | Dedicated integration test database | Required for `npm test` |
 
-Для remote PostgreSQL використовуйте TLS із перевіркою сертифіката згідно з конфігурацією провайдера; наприклад, задайте `sslmode=verify-full` і довірений CA у connection string. Локальний Compose призначений для розробки та публікує PostgreSQL лише на `127.0.0.1`.
+For remote PostgreSQL, enable TLS certificate verification according to your provider's configuration; for example, use `sslmode=verify-full` and a trusted CA in the connection string. Local Compose services are intended for development and expose PostgreSQL only on `127.0.0.1`.
 
-## Перевірки
+## Verification
 
 ```bash
 npm run typecheck
@@ -135,26 +151,27 @@ docker compose exec -T db createdb -U orders orders_test
 TEST_DATABASE_URL=postgres://orders:orders@localhost:5432/orders_test npm test
 ```
 
-Створення `orders_test` потрібне лише один раз. Тести використовують справжній PostgreSQL, окрему випадкову schema та видаляють її після завершення. `DATABASE_URL` ніколи не використовується як fallback для тестів. Покрито створення, читання й ізоляцію користувачів, паралельні повтори, конкурентне списання залишків, конфлікт payload, rollback після помилки вставки, retry після нестачі товару, SQL lock timeout, UUID casing, JWT, валідацію та HTTP-помилки.
+Create `orders_test` only once. Tests use real PostgreSQL, create a random isolated schema, and remove it afterward. `DATABASE_URL` is never a fallback for tests. Coverage includes creation, reads, ownership isolation, parallel retries, concurrent stock reservations, payload conflicts, rollback, retry after insufficient stock, lock timeouts, UUID normalization, verified JWT claims, the current-user endpoint, and HTTP errors.
 
-GitHub Actions запускає ті самі перевірки з PostgreSQL 17.
+GitHub Actions runs type checks, the build, and the same integration tests with PostgreSQL 17. The current suite contains 16 tests.
 
-Для запуску зібраного сервера:
+Run the compiled server:
 
 ```bash
 npm run build
 npm start
 ```
 
-Міграції запускаються окремою командою перед стартом API. Вони серіалізуються advisory lock, застосовуються транзакційно й перевіряють checksum уже виконаних файлів. Зміни схеми оформлюйте новим SQL-файлом у `db/migrations`, не редагуючи застосовані міграції.
+Run migrations separately before starting the API. They are serialized by an advisory lock, applied transactionally, and verify checksums of previously applied files. Add a new SQL file in `db/migrations` for schema changes instead of editing applied migrations.
 
-## Структура
+## Project structure
 
 ```text
 src/
-  app.ts                 # HTTP composition and error handling
+  app.ts                 # HTTP composition, current-user endpoint, and errors
   server.ts              # Startup and graceful shutdown
-  auth.ts                # Verified JWT authentication
+  auth.ts                # HS256 JWT verification
+  user.ts                # Typed identity extracted from verified claims
   config.ts              # Environment validation
   database.ts            # Connection pool
   errors.ts              # API errors
@@ -164,9 +181,15 @@ src/
     router.ts            # HTTP routes
     service.ts           # Transactional business logic
 db/migrations/           # Versioned SQL schema
-scripts/                 # Migrations, demo seed, local JWT
+scripts/                 # Migrations, demo seed, and local JWT generation
 test/api.test.ts         # PostgreSQL integration and concurrency tests
 compose.yaml             # Local PostgreSQL
 ```
 
-Проєкт реалізує замовлення одного товару за запит. Оплата, кошик, каталог і публікація подій не входять у цей сценарій. Якщо з'явиться вимога відправляти події до Azure Service Bus, додайте transactional outbox у транзакцію створення замовлення.
+## Implementation status
+
+This README describes the implementation currently present in `main`: order creation and reads, idempotency, inventory reservations, JWT verification, and `/api/me`.
+
+Scope authorization, RS256/JWKS, cursor pagination, cancellation, RabbitMQ outbox, and OpenAPI have been implemented in the [full feature branch](https://github.com/MykolaMiatenko/transactional-orders-api/tree/feat/06-outbox-and-openapi). Those changes have not yet been integrated into `main`. Consult that branch's README for its additional services, endpoints, and commands.
+
+Each order contains one product. Payments, a shopping cart, and a catalog are outside this example's scope.
