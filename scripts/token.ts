@@ -3,6 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 const config = loadConfig();
 if (config.NODE_ENV === "production") throw new Error("Development token generation is disabled in production.");
+if (config.JWT_MODE !== "HS256") throw new Error("Local token generation requires JWT_MODE=HS256.");
 const userId = process.argv[2] ?? "demo-user";
 const scope = process.argv[3] ?? "orders:read orders:create orders:cancel";
 const roles = (process.argv[4] ?? "buyer").split(",").filter(Boolean);
