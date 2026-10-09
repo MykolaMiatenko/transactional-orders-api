@@ -15,7 +15,17 @@ const schema = z.object({
   JWKS_CACHE_MAX_AGE_MS: z.coerce.number().int().min(1000).max(3_600_000).default(600_000),
   JWT_ISSUER: z.string().min(1).default("order-api"),
   JWT_AUDIENCE: z.string().min(1).default("order-api-clients"),
+  AMQP_URL: z.url().refine((value) => /^(amqp|amqps):/.test(value)).default("amqp://orders:orders@localhost:5672"),
+  OUTBOX_POLL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+  OUTBOX_LEASE_MS: z.coerce.number().int().min(1000).max(300_000).default(30_000),
+  OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+  OUTBOX_BACKOFF_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+  AMQP_CONFIRM_TIMEOUT_MS: z.coerce.number().int().min(100).max(10_000).default(5000),
+  CONSUMER_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
 }).superRefine((config, ctx) => {
+  if (config.OUTBOX_LEASE_MS <= config.AMQP_CONFIRM_TIMEOUT_MS + 5000) {
+    ctx.addIssue({ code: "custom", path: ["OUTBOX_LEASE_MS"], message: "Lease must exceed confirm timeout plus database timeout." });
+  }
   if (config.JWT_MODE === "HS256" && Buffer.byteLength(config.JWT_SECRET ?? "") < 32) {
     ctx.addIssue({ code: "custom", path: ["JWT_SECRET"], message: "HS256 requires at least 32 bytes." });
   }
