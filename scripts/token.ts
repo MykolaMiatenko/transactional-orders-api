@@ -4,8 +4,10 @@ import { loadConfig } from "../src/config.js";
 const config = loadConfig();
 if (config.NODE_ENV === "production") throw new Error("Development token generation is disabled in production.");
 const userId = process.argv[2] ?? "demo-user";
+const scope = process.argv[3] ?? "orders:read orders:create orders:cancel";
+const roles = (process.argv[4] ?? "buyer").split(",").filter(Boolean);
 if (!userId.trim() || userId.length > 200) throw new Error("User ID must contain between 1 and 200 characters.");
-const token = await new SignJWT({})
+const token = await new SignJWT({ scope, roles })
   .setProtectedHeader({ alg: "HS256", typ: "JWT" })
   .setSubject(userId)
   .setIssuer(config.JWT_ISSUER)

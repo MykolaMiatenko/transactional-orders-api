@@ -9,6 +9,7 @@ import { ApiError, databaseErrorCode } from "./errors.js";
 import { createOrdersRouter } from "./orders/router.js";
 import { OrderService } from "./orders/service.js";
 import { getUser } from "./user.js";
+import { createInventoryRouter } from "./inventory.js";
 
 export function createApp(pool: Pool, config: Config, logger: Logger) {
   const app = express();
@@ -39,6 +40,7 @@ export function createApp(pool: Pool, config: Config, logger: Logger) {
   const authenticate = createAuthenticate(config);
   app.get("/api/me", authenticate, (_req, res) => { res.json(getUser(res)); });
   app.use("/api/orders", createOrdersRouter(new OrderService(pool), authenticate));
+  app.use("/api/products", createInventoryRouter(pool, authenticate));
   app.use((_req, _res) => { throw new ApiError(404, "NOT_FOUND", "Route was not found."); });
 
   const errorHandler: ErrorRequestHandler = (error: unknown, _req, res, next) => {
