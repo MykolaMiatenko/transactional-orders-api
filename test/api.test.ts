@@ -9,7 +9,7 @@ import { pino } from "pino";
 import { createApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { migrate } from "../src/migrate.js";
-import type { OrderResponse } from "../src/orders/contracts.js";
+import type { OrderResponse, OrderPage, OrderDetails } from "../src/orders/contracts.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("Set TEST_DATABASE_URL to a dedicated PostgreSQL test database. Tests never use DATABASE_URL.");
@@ -78,7 +78,9 @@ test("creates an order using the database price and serves its Location", async 
   assert.equal(location, `/api/orders/${order.id}`);
   const read = await fetch(`${baseUrl}${location}`, { headers: { Authorization: `Bearer ${token}` } });
   assert.equal(read.status, 200);
-  assert.deepEqual(await read.json(), order);
+  const details = await read.json() as OrderDetails;
+  assert.deepEqual({ id: details.id, productId: details.productId, quantity: details.quantity, totalCents: details.totalCents }, order);
+  assert.equal(details.status, "created");
   assert.deepEqual(await state(), { stock: 8, orders: 1, claims: 1 });
 });
 
@@ -220,7 +222,7 @@ test("health probes work and migrations are repeatable", async () => {
   assert.equal((await fetch(`${baseUrl}/health/live`)).status, 200);
   assert.equal((await fetch(`${baseUrl}/health/ready`)).status, 200);
   await migrate(pool);
-  assert.equal((await pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0]?.count, 1);
+  assert.equal((await pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0]?.count, 2);
 });
 
 test("me returns only verified identity, roles and scopes", async () => {
@@ -266,4 +268,37 @@ test("inventory replacement requires inventory scope and validates stock", async
     assert.deepEqual(await response.json(), { productId, stock: 20 });
   }
   assert.deepEqual(await state(), { stock: 20, orders: 0, claims: 0 });
+});
+
+test("cursor pagination preserves timestamp precision and isolates users", async () => {
+  const ids = Array.from({ length: 5 }, () => randomUUID()).sort().reverse();
+  for (const [i, id] of ids.entries()) {
+    await pool.query(`INSERT INTO orders (id, user_id, product_id, quantity, total_cents, created_at)
+      VALUES ($1, 'user-a', $2, 1, 1999, $3)`, [id, productId, i < 3 ? "2026-01-01T12:00:00.123456Z" : "2026-01-01T12:00:00.123455Z"]);
+  }
+  await pool.query("INSERT INTO orders (id, user_id, product_id, quantity, total_cents) VALUES ($1, 'user-b', $2, 1, 1999)", [randomUUID(), productId]);
+  const list = (query: string, jwt = token) => fetch(`${baseUrl}/api/orders?${query}`, { headers: { Authorization: `Bearer ${jwt}` } });
+  const first = await (await list("limit=2")).json() as OrderPage;
+  assert.deepEqual(first.items.map((item) => item.id), ids.slice(0, 2));
+  assert.equal(first.items[0]?.createdAt, "2026-01-01T12:00:00.123456Z");
+  assert.ok(first.nextCursor);
+  // A new, newer order must not shift already established page boundaries.
+  await post({ productId, quantity: 1 });
+  const second = await (await list(`limit=2&cursor=${first.nextCursor}`)).json() as OrderPage;
+  const third = await (await list(`limit=2&cursor=${second.nextCursor}`)).json() as OrderPage;
+  assert.deepEqual([...first.items, ...second.items, ...third.items].map((item) => item.id), ids);
+  assert.equal(third.nextCursor, null);
+  assert.equal((await list(`cursor=${first.nextCursor}`, await signToken("user-b"))).status, 400);
+  assert.equal((await list(`cursor=${first.nextCursor}&status=created`)).status, 400);
+});
+
+test("order list validates filters and returns bounded pages", async () => {
+  await post();
+  const list = (query: string) => fetch(`${baseUrl}/api/orders?${query}`, { headers: { Authorization: `Bearer ${token}` } });
+  for (const query of ["limit=0", "limit=101", "limit=2&limit=3", "cursor=garbage", "status=unknown", "from=yesterday", "from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z", "extra=1"]) {
+    assert.equal((await list(query)).status, 400);
+  }
+  const empty = await (await list("status=cancelled")).json() as OrderPage;
+  assert.deepEqual(empty, { items: [], nextCursor: null });
+  assert.equal(((await (await list("status=created&from=2000-01-01T00:00:00Z&to=2100-01-01T00:00:00Z")).json()) as OrderPage).items.length, 1);
 });
