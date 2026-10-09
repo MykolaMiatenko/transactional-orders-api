@@ -13,3 +13,9 @@ export type OrderResponse = {
   quantity: number;
   totalCents: number;
 };
+
+export type OrderDetails = OrderResponse & {
+  status: "created" | "cancelled";
+  createdAt: string;
+};
+export type OrderPage = { items: OrderDetails[]; nextCursor: string | null };

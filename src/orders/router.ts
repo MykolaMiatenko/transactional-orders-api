@@ -4,10 +4,16 @@ import { createOrderSchema, uuidSchema } from "./contracts.js";
 import type { OrderService } from "./service.js";
 import { getUser } from "../user.js";
 import { requireScopes } from "../authorization.js";
+import { listOrdersSchema } from "./pagination.js";
 
 export function createOrdersRouter(service: OrderService, authenticate: RequestHandler): Router {
   const router = Router();
   router.use(authenticate);
+  router.get("/", requireScopes("orders:read"), async (req, res) => {
+    const query = listOrdersSchema.safeParse(req.query);
+    if (!query.success) throw new ApiError(400, "INVALID_REQUEST", "Check limit, status, date filters and cursor.");
+    res.json(await service.list(getUser(res).userId, query.data));
+  });
   router.post("/", requireScopes("orders:create"), async (req, res) => {
     const body = createOrderSchema.safeParse(req.body);
     const key = uuidSchema.safeParse(req.get("Idempotency-Key"));

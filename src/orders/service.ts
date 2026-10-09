@@ -1,9 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { ApiError, databaseErrorCode } from "../errors.js";
-import type { CreateOrderInput, OrderResponse } from "./contracts.js";
+import type { CreateOrderInput, OrderResponse, OrderDetails, OrderPage } from "./contracts.js";
+import { decodeCursor, encodeCursor, type ListOrdersInput } from "./pagination.js";
 
 const operation = "create-order:v1";
+// Preserve PostgreSQL microseconds so a cursor cannot skip rows with sub-millisecond timestamps.
+const orderColumns = `id, product_id AS "productId", quantity, total_cents AS "totalCents", status,
+  to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt"`;
 
 export class OrderService {
   constructor(private readonly pool: Pool) {}
@@ -88,14 +92,32 @@ export class OrderService {
     }
   }
 
-  async get(userId: string, id: string): Promise<OrderResponse> {
-    const result = await this.pool.query<OrderResponse>(
-      `SELECT id, product_id AS "productId", quantity, total_cents AS "totalCents"
+  async get(userId: string, id: string): Promise<OrderDetails> {
+    const result = await this.pool.query<OrderDetails>(
+      `SELECT ${orderColumns}
        FROM orders WHERE id = $1 AND user_id = $2`,
       [id, userId],
     );
     const order = result.rows[0];
     if (!order) throw new ApiError(404, "ORDER_NOT_FOUND", "Order was not found.");
     return order;
+  }
+
+  async list(userId: string, input: ListOrdersInput): Promise<OrderPage> {
+    const cursor = decodeCursor(userId, input);
+    const values: unknown[] = [userId];
+    const conditions = ["user_id = $1"];
+    const parameter = (value: unknown) => { values.push(value); return `$${values.length}`; };
+    if (input.status) conditions.push(`status = ${parameter(input.status)}`);
+    if (input.from) conditions.push(`created_at >= ${parameter(input.from)}::timestamptz`);
+    if (input.to) conditions.push(`created_at <= ${parameter(input.to)}::timestamptz`);
+    if (cursor) conditions.push(`(created_at, id) < (${parameter(cursor.createdAt)}::timestamptz, ${parameter(cursor.id)}::uuid)`);
+    const result = await this.pool.query<OrderDetails>(
+      `SELECT ${orderColumns} FROM orders WHERE ${conditions.join(" AND ")}
+       ORDER BY created_at DESC, id DESC LIMIT ${parameter(input.limit + 1)}`, values,
+    );
+    const items = result.rows.slice(0, input.limit);
+    const last = items.at(-1);
+    return { items, nextCursor: result.rows.length > input.limit && last ? encodeCursor(userId, input, last) : null };
   }
 }

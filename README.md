@@ -50,6 +50,7 @@ curl -i http://localhost:3000/api/orders \
 | Метод | Шлях | Призначення |
 |---|---|---|
 | GET | `/api/me` | Перевірена ідентичність, ролі та scopes поточного користувача |
+| GET | `/api/orders` | Власні замовлення з cursor pagination і фільтрами; scope `orders:read` |
 | PUT | `/api/products/:id/stock` | Заміна залишку: `{ "stock": 100 }`; scope `inventory:write` |
 | POST | `/api/orders` | Створити замовлення; потрібні Bearer JWT та UUID `Idempotency-Key` |
 | GET | `/api/orders/:id` | Прочитати власне замовлення; потрібен Bearer JWT |
@@ -90,6 +91,10 @@ curl -i http://localhost:3000/api/orders \
 Для 503 API встановлює `Retry-After: 1`. Після timeout, мережевого збою або невизначеного результату повторюйте запит із **тим самим ключем і payload**: транзакція могла вже закомітитися.
 
 ## Транзакції та конкурентність
+
+`GET /api/orders?limit=20&status=created&from=2026-01-01T00:00:00Z` повертає `{ "items": [...], "nextCursor": "..." }`. `limit` — 1–100 (типово 20), `status` — `created` або `cancelled`, `from`/`to` — включні ISO 8601 timestamps із часовим поясом. Для наступної сторінки передайте `cursor` та ті самі фільтри. Cursor прив'язаний до користувача і фільтрів; некоректний повертає 400 `INVALID_CURSOR`. Сортування — `(created_at DESC, id DESC)`, timestamps зберігають мікросекунди PostgreSQL. Пагінація не є snapshot: новіші записи після першої сторінки не потрапляють у продовження, а зміни статусу можуть змінити склад відфільтрованого списку.
+
+Читання замовлень повертає також `status` і `createdAt`; результат створення залишається незмінним для ідемпотентних повторів.
 
 `OrderService.create()` виконує всі SQL-запити через один клієнт `pg` в одній транзакції `READ COMMITTED`:
 
