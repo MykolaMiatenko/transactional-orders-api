@@ -28,5 +28,13 @@ export function createOrdersRouter(service: OrderService, authenticate: RequestH
     if (!id.success) throw new ApiError(400, "INVALID_REQUEST", "Order ID must be a UUID.");
     res.json(await service.get(getUser(res).userId, id.data));
   });
+  router.post("/:id/cancel", requireScopes("orders:cancel"), async (req, res) => {
+    const id = uuidSchema.safeParse(req.params.id);
+    if (!id.success) throw new ApiError(400, "INVALID_REQUEST", "Order ID must be a UUID.");
+    if (req.body !== undefined && (typeof req.body !== "object" || req.body === null || Array.isArray(req.body) || Object.keys(req.body).length > 0)) {
+      throw new ApiError(400, "INVALID_REQUEST", "Cancellation does not accept a request body.");
+    }
+    res.json(await service.cancel(getUser(res).userId, id.data));
+  });
   return router;
 }

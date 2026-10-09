@@ -51,6 +51,7 @@ curl -i http://localhost:3000/api/orders \
 |---|---|---|
 | GET | `/api/me` | Перевірена ідентичність, ролі та scopes поточного користувача |
 | GET | `/api/orders` | Власні замовлення з cursor pagination і фільтрами; scope `orders:read` |
+| POST | `/api/orders/:id/cancel` | Скасування власного замовлення; scope `orders:cancel`, без тіла |
 | PUT | `/api/products/:id/stock` | Заміна залишку: `{ "stock": 100 }`; scope `inventory:write` |
 | POST | `/api/orders` | Створити замовлення; потрібні Bearer JWT та UUID `Idempotency-Key` |
 | GET | `/api/orders/:id` | Прочитати власне замовлення; потрібен Bearer JWT |
@@ -95,6 +96,8 @@ curl -i http://localhost:3000/api/orders \
 `GET /api/orders?limit=20&status=created&from=2026-01-01T00:00:00Z` повертає `{ "items": [...], "nextCursor": "..." }`. `limit` — 1–100 (типово 20), `status` — `created` або `cancelled`, `from`/`to` — включні ISO 8601 timestamps із часовим поясом. Для наступної сторінки передайте `cursor` та ті самі фільтри. Cursor прив'язаний до користувача і фільтрів; некоректний повертає 400 `INVALID_CURSOR`. Сортування — `(created_at DESC, id DESC)`, timestamps зберігають мікросекунди PostgreSQL. Пагінація не є snapshot: новіші записи після першої сторінки не потрапляють у продовження, а зміни статусу можуть змінити склад відфільтрованого списку.
 
 Читання замовлень повертає також `status` і `createdAt`; результат створення залишається незмінним для ідемпотентних повторів.
+
+`POST /api/orders/:id/cancel` виконує перехід `created → cancelled` і повертає актуальне замовлення з `cancelledAt`. Блокування рядка замовлення, зміна статусу та повернення залишку виконуються в одній транзакції. Повторне скасування повертає 200 і той самий стан без повторного повернення товару. Повтор початкового POST з `Idempotency-Key` після скасування повертає початковий результат створення; для актуального стану використовуйте GET.
 
 `OrderService.create()` виконує всі SQL-запити через один клієнт `pg` в одній транзакції `READ COMMITTED`:
 

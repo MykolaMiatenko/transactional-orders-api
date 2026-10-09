@@ -222,7 +222,7 @@ test("health probes work and migrations are repeatable", async () => {
   assert.equal((await fetch(`${baseUrl}/health/live`)).status, 200);
   assert.equal((await fetch(`${baseUrl}/health/ready`)).status, 200);
   await migrate(pool);
-  assert.equal((await pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0]?.count, 2);
+  assert.equal((await pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0]?.count, 3);
 });
 
 test("me returns only verified identity, roles and scopes", async () => {
@@ -301,4 +301,39 @@ test("order list validates filters and returns bounded pages", async () => {
   const empty = await (await list("status=cancelled")).json() as OrderPage;
   assert.deepEqual(empty, { items: [], nextCursor: null });
   assert.equal(((await (await list("status=created&from=2000-01-01T00:00:00Z&to=2100-01-01T00:00:00Z")).json()) as OrderPage).items.length, 1);
+});
+
+const cancelOrder = (id: string, jwt = token) => fetch(`${baseUrl}/api/orders/${id}/cancel`, {
+  method: "POST", headers: { Authorization: `Bearer ${jwt}` },
+});
+
+test("concurrent cancellations restore inventory once and preserve creation replay", async () => {
+  const key = randomUUID();
+  const creation = await (await post({ productId, quantity: 2 }, key)).json() as OrderResponse;
+  const responses = await Promise.all(Array.from({ length: 10 }, () => cancelOrder(creation.id)));
+  assert.ok(responses.every((response) => response.status === 200));
+  const bodies = await Promise.all(responses.map((response) => response.json())) as OrderDetails[];
+  assert.equal(bodies[0]?.status, "cancelled");
+  assert.ok(bodies[0]?.cancelledAt);
+  for (const body of bodies) assert.deepEqual(body, bodies[0]);
+  assert.deepEqual(await state(), { stock: 10, orders: 1, claims: 1 });
+  assert.deepEqual(await (await post({ productId, quantity: 2 }, key)).json(), creation);
+  const details = await (await fetch(`${baseUrl}/api/orders/${creation.id}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+  assert.deepEqual(details, bodies[0]);
+});
+
+test("cancellation checks owner and scope and rolls back stock if the status update fails", async () => {
+  const creation = await (await post()).json() as OrderResponse;
+  assert.equal((await cancelOrder(creation.id, await signToken("user-b"))).status, 404);
+  assert.equal((await cancelOrder(randomUUID())).status, 404);
+  assert.equal((await cancelOrder(creation.id, await signToken("user-a", { claims: { scope: "orders:read" } }))).status, 403);
+  await pool.query("ALTER TABLE orders ADD CONSTRAINT simulated_cancel_failure CHECK (status <> 'cancelled')");
+  try {
+    assert.equal((await cancelOrder(creation.id)).status, 500);
+    assert.deepEqual(await state(), { stock: 8, orders: 1, claims: 1 });
+    assert.equal((await pool.query("SELECT status FROM orders WHERE id = $1", [creation.id])).rows[0]?.status, "created");
+  } finally {
+    await pool.query("ALTER TABLE orders DROP CONSTRAINT simulated_cancel_failure");
+  }
+  assert.equal((await cancelOrder(creation.id)).status, 200);
 });

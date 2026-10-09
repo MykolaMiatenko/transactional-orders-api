@@ -17,5 +17,6 @@ export type OrderResponse = {
 export type OrderDetails = OrderResponse & {
   status: "created" | "cancelled";
   createdAt: string;
+  cancelledAt: string | null;
 };
 export type OrderPage = { items: OrderDetails[]; nextCursor: string | null };
