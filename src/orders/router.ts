@@ -3,11 +3,12 @@ import { ApiError } from "../errors.js";
 import { createOrderSchema, uuidSchema } from "./contracts.js";
 import type { OrderService } from "./service.js";
 import { getUser } from "../user.js";
+import { requireScopes } from "../authorization.js";
 
 export function createOrdersRouter(service: OrderService, authenticate: RequestHandler): Router {
   const router = Router();
   router.use(authenticate);
-  router.post("/", async (req, res) => {
+  router.post("/", requireScopes("orders:create"), async (req, res) => {
     const body = createOrderSchema.safeParse(req.body);
     const key = uuidSchema.safeParse(req.get("Idempotency-Key"));
     if (!body.success || !key.success) {
@@ -16,7 +17,7 @@ export function createOrdersRouter(service: OrderService, authenticate: RequestH
     const order = await service.create(getUser(res).userId, key.data, body.data);
     res.status(201).location(`/api/orders/${order.id}`).json(order);
   });
-  router.get("/:id", async (req, res) => {
+  router.get("/:id", requireScopes("orders:read"), async (req, res) => {
     const id = uuidSchema.safeParse(req.params.id);
     if (!id.success) throw new ApiError(400, "INVALID_REQUEST", "Order ID must be a UUID.");
     res.json(await service.get(getUser(res).userId, id.data));

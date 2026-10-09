@@ -28,7 +28,7 @@ let token: string;
 const productId = "7106f556-b21c-4a1f-b155-44327735deae";
 
 async function signToken(userId = "user-a", overrides: { audience?: string; expiration?: number; issuer?: string; claims?: JWTPayload } = {}) {
-  return new SignJWT(overrides.claims ?? {}).setProtectedHeader({ alg: "HS256" })
+  return new SignJWT(overrides.claims ?? { scope: "orders:read orders:create orders:cancel" }).setProtectedHeader({ alg: "HS256" })
     .setSubject(userId).setIssuer(overrides.issuer ?? config.JWT_ISSUER)
     .setAudience(overrides.audience ?? config.JWT_AUDIENCE)
     .setIssuedAt().setExpirationTime(overrides.expiration ?? Math.floor(Date.now() / 1000) + 60)
@@ -239,4 +239,31 @@ test("rejects invalid subjects, malformed claims and wrong issuer", async () => 
   for (const jwt of [...tokens, noSubject]) {
     assert.equal((await fetch(`${baseUrl}/api/me`, { headers: { Authorization: `Bearer ${jwt}` } })).status, 401);
   }
+});
+
+test("valid tokens require explicit scopes; roles cannot grant permissions", async () => {
+  for (const claims of [{}, { roles: ["admin"] }, { scope: "orders:read" }]) {
+    const restricted = await signToken("user-a", { claims });
+    assert.equal((await post(undefined, randomUUID(), restricted)).status, 403);
+  }
+  const createOnly = await signToken("user-a", { claims: { scope: "orders:create" } });
+  const order = await (await post(undefined, randomUUID(), createOnly)).json() as OrderResponse;
+  assert.equal((await fetch(`${baseUrl}/api/orders/${order.id}`, { headers: { Authorization: `Bearer ${createOnly}` } })).status, 403);
+});
+
+test("inventory replacement requires inventory scope and validates stock", async () => {
+  const replace = (auth: string, stock: unknown, id = productId) => fetch(`${baseUrl}/api/products/${id}/stock`, {
+    method: "PUT", headers: { Authorization: `Bearer ${auth}`, "Content-Type": "application/json" }, body: JSON.stringify({ stock }),
+  });
+  assert.equal((await replace(token, 20)).status, 403);
+  const inventoryToken = await signToken("manager", { claims: { scope: "inventory:write" } });
+  assert.equal((await replace(inventoryToken, -1)).status, 400);
+  assert.equal((await replace(inventoryToken, "20")).status, 400);
+  assert.equal((await replace(inventoryToken, 20, randomUUID())).status, 404);
+  for (let i = 0; i < 2; i++) {
+    const response = await replace(inventoryToken, 20);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { productId, stock: 20 });
+  }
+  assert.deepEqual(await state(), { stock: 20, orders: 0, claims: 0 });
 });
