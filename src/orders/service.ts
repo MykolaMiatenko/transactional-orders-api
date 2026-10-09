@@ -3,11 +3,13 @@ import type { Pool } from "pg";
 import { ApiError, databaseErrorCode } from "../errors.js";
 import type { CreateOrderInput, OrderResponse, OrderDetails, OrderPage } from "./contracts.js";
 import { decodeCursor, encodeCursor, type ListOrdersInput } from "./pagination.js";
+import { transaction } from "../transaction.js";
 
 const operation = "create-order:v1";
 // Preserve PostgreSQL microseconds so a cursor cannot skip rows with sub-millisecond timestamps.
 const orderColumns = `id, product_id AS "productId", quantity, total_cents AS "totalCents", status,
-  to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt"`;
+  to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
+  to_char(cancelled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cancelledAt"`;
 
 export class OrderService {
   constructor(private readonly pool: Pool) {}
@@ -119,5 +121,22 @@ export class OrderService {
     const items = result.rows.slice(0, input.limit);
     const last = items.at(-1);
     return { items, nextCursor: result.rows.length > input.limit && last ? encodeCursor(userId, input, last) : null };
+  }
+
+  async cancel(userId: string, id: string): Promise<OrderDetails> {
+    return transaction(this.pool, async (client) => {
+      // Lock the order before checking its state so parallel cancellations restore stock once.
+      const result = await client.query<OrderDetails>(
+        `SELECT ${orderColumns} FROM orders WHERE id = $1 AND user_id = $2 FOR UPDATE`, [id, userId],
+      );
+      const order = result.rows[0];
+      if (!order) throw new ApiError(404, "ORDER_NOT_FOUND", "Order was not found.");
+      if (order.status === "cancelled") return order;
+      await client.query("UPDATE products SET stock = stock + $2 WHERE id = $1", [order.productId, order.quantity]);
+      const updated = await client.query<OrderDetails>(
+        `UPDATE orders SET status = 'cancelled', cancelled_at = now() WHERE id = $1 RETURNING ${orderColumns}`, [id],
+      );
+      return updated.rows[0]!;
+    });
   }
 }
