@@ -4,6 +4,7 @@ import { ApiError, databaseErrorCode } from "../errors.js";
 import type { CreateOrderInput, OrderResponse, OrderDetails, OrderPage } from "./contracts.js";
 import { decodeCursor, encodeCursor, type ListOrdersInput } from "./pagination.js";
 import { transaction } from "../transaction.js";
+import { appendEvent } from "../events/outbox.js";
 
 const operation = "create-order:v1";
 // Preserve PostgreSQL microseconds so a cursor cannot skip rows with sub-millisecond timestamps.
@@ -76,6 +77,7 @@ export class OrderService {
          WHERE user_id = $1 AND operation = $2 AND request_key = $3`,
         [userId, operation, requestKey, JSON.stringify(response)],
       );
+      await appendEvent(client, "OrderCreated", response);
       await client.query("COMMIT");
       return response;
     } catch (error) {
@@ -136,6 +138,7 @@ export class OrderService {
       const updated = await client.query<OrderDetails>(
         `UPDATE orders SET status = 'cancelled', cancelled_at = now() WHERE id = $1 RETURNING ${orderColumns}`, [id],
       );
+      await appendEvent(client, "OrderCancelled", updated.rows[0]!);
       return updated.rows[0]!;
     });
   }

@@ -10,6 +10,7 @@ import { createOrdersRouter } from "./orders/router.js";
 import { OrderService } from "./orders/service.js";
 import { getUser } from "./user.js";
 import { createInventoryRouter } from "./inventory.js";
+import { mountDocumentation } from "./openapi.js";
 
 export function createApp(pool: Pool, config: Config, logger: Logger) {
   const app = express();
@@ -28,6 +29,7 @@ export function createApp(pool: Pool, config: Config, logger: Logger) {
   });
   app.use(helmet());
   app.use(express.json({ limit: "16kb" }));
+  if (config.NODE_ENV !== "production") mountDocumentation(app);
   app.get("/health/live", (_req, res) => { res.json({ status: "ok" }); });
   app.get("/health/ready", async (_req, res) => {
     try {

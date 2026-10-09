@@ -43,7 +43,7 @@ before(async () => {
   token = await signToken();
 });
 beforeEach(async () => {
-  await pool.query("TRUNCATE idempotency_requests, orders, products");
+  await pool.query("TRUNCATE outbox_events, idempotency_requests, orders, products");
   await pool.query("INSERT INTO products (id, price_cents, stock) VALUES ($1, 1999, 10)", [productId]);
 });
 after(async () => {
@@ -222,7 +222,7 @@ test("health probes work and migrations are repeatable", async () => {
   assert.equal((await fetch(`${baseUrl}/health/live`)).status, 200);
   assert.equal((await fetch(`${baseUrl}/health/ready`)).status, 200);
   await migrate(pool);
-  assert.equal((await pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0]?.count, 3);
+  assert.equal((await pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0]?.count, 4);
 });
 
 test("me returns only verified identity, roles and scopes", async () => {
